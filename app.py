@@ -3,7 +3,6 @@ import yfinance as yf
 import requests
 import pandas as pd
 import numpy as np
-import altair as alt
 
 # --- 1. 配置与密钥 ---
 
@@ -486,64 +485,57 @@ if search_button and ticker:
             update_recent_list(ticker, data, price_mid_peg)
 
             # --- C. 历史图表 ---
-st.divider()
-st.header("历史发展过程 (10年)")
-
-# -- 准备数据 --
-# 股价是每日数据
-df_price = data['hist_price'].to_frame(name='Price')
-# PE/EPS是季度数据
-df_ratios = data['hist_ratios'][['peRatio', 'eps']]
-
-# -- 图表一 (新)：股价 vs. PE 双Y轴图 --
-st.subheader("股价 vs. 历史PE比率")
-
-try:
-    # 将每日股价和季度PE数据合并
-    # 我们使用 merge_asof 来将季度PE数据“填充”到每日股价中
-    df_price_with_pe = pd.merge_asof(
-        df_price.sort_index(),
-        df_ratios[['peRatio']].dropna(),
-        left_index=True,
-        right_index=True,
-        direction='backward' # 向后填充，使PE在整个季度中保持不变
-    ).reset_index().rename(columns={'index': 'date'}) # 重置索引并重命名日期列
-
-    # 基础图表 (X轴)
-    base = alt.Chart(df_price_with_pe).encode(
-        alt.X('date:T', title='日期')
-    ).properties(
-        title=f"{ticker} 股价 vs. PE比率"
-    )
-
-    # 左Y轴：股价
-    line_price = base.mark_line(color='#1f77b4').encode(
-        alt.Y('Price', title='股价 ($)', axis=alt.Axis(titleColor='#1f77b4'))
-    )
-
-    # 右Y轴：PE比率
-    line_pe = base.mark_line(color='#ff7f0e', strokeDash=[5,5]).encode(
-        alt.Y('peRatio', title='PE 比率 (x)', axis=alt.Axis(titleColor='#ff7f0e'))
-    )
-
-    # 组合图层
-    chart_combo = alt.layer(line_price, line_pe).resolve_scale(
-        y='independent' # 关键：让两个Y轴独立
-    ).interactive() # 允许缩放和拖动
-
-    st.altair_chart(chart_combo, use_container_width=True)
-
-except Exception as e:
-    st.error(f"创建双轴图失败: {e}")
-    st.info("回退到简单图表...")
-    st.subheader("股价走势 (10年)")
-    st.line_chart(df_price, use_container_width=True)
-    st.subheader("历史 Trailing PE 比率 (季度)")
-    st.line_chart(df_ratios['peRatio'], use_container_width=True)
-
-# -- 图表二 (保留)：历史EPS柱状图 --
-st.subheader("历史 EPS (TTM, 季度)")
-st.bar_chart(df_ratios['eps'], use_container_width=True)
+            st.divider()
+            st.header("📊 历史发展过程 (10年)")
+            
+            # 创建两个并排的图表
+            chart_cols = st.columns(2)
+            
+            with chart_cols[0]:
+                st.subheader("💹 股价走势")
+                if not data['hist_price'].empty:
+                    # 添加一些统计信息
+                    price_change = ((data['price'] - data['hist_price'].iloc[0]) / data['hist_price'].iloc[0] * 100)
+                    st.caption(f"10年涨幅: {price_change:.1f}%")
+                    st.line_chart(data['hist_price'], height=300)
+                else:
+                    st.info("暂无股价历史数据")
+            
+            with chart_cols[1]:
+                st.subheader("📈 历史 PE 比率")
+                if not data['hist_pe'].empty:
+                    # 添加PE统计信息
+                    pe_mean = data['hist_pe'].mean()
+                    pe_current = data['pe_ttm']
+                    st.caption(f"5年平均PE: {pe_mean:.1f}x | 当前PE: {pe_current:.1f}x")
+                    st.line_chart(data['hist_pe'], height=300)
+                else:
+                    st.info("暂无PE历史数据")
+            
+            # 添加估值区间可视化
+            if not data['hist_pe'].empty and len(valuation_results) > 0:
+                st.divider()
+                st.subheader("🎯 估值区间可视化")
+                
+                # 创建估值对比数据
+                vis_data = pd.DataFrame({
+                    '价格': [data['price']],
+                })
+                
+                # 添加各种估值区间
+                for method, vals in valuation_results.items():
+                    vis_data[f"{vals['method']}_低估"] = vals['low']
+                    vis_data[f"{vals['method']}_合理"] = vals['mid']
+                    vis_data[f"{vals['method']}_高估"] = vals['high']
+                
+                # 如果有分析师目标价，也加入
+                if analyst_mean > 0:
+                    vis_data['分析师目标'] = analyst_mean
+                
+                # 转置数据以便更好地展示
+                st.bar_chart(vis_data.T, height=300)
+                
+                st.caption("📊 绿色区域表示合理估值范围，当前价格应该在此区间内或以下")
 
         except Exception as e:
             st.error(f"❌ 无法获取股票 {ticker} 的数据。")
