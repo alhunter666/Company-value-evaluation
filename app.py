@@ -2,25 +2,21 @@ import streamlit as st
 import yfinance as yf
 import requests
 import pandas as pd
+import numpy as np
 
 # --- 1. 配置与密钥 ---
 
-# 设置页面为宽屏模式，这是 Streamlit 的推荐做法
 st.set_page_config(layout="wide", page_title="股票估值分析器", page_icon="📊")
 
-# 从 Streamlit Secrets 安全地读取 FMP API 密钥
 FMP_API_KEY = st.secrets.get("FMP_API_KEY")
 
-# 关键：检查密钥是否存在。如果部署时未设置 Secrets，App将停止并显示错误
 if not FMP_API_KEY:
     st.error("FMP_API_KEY 未在 Streamlit Secrets 中设置！请添加它以便 App 运行。")
     st.info("💡 提示：在 Streamlit Cloud 的 Settings → Secrets 中添加：\n```\nFMP_API_KEY = \"your_api_key_here\"\n```")
     st.stop()
 
-# --- 2. 会话状态 (Session State) 初始化 ---
+# --- 2. 会话状态初始化 ---
 
-# 用于存储最近10次搜索的记录
-# 我们将其初始化为一个空的 DataFrame，并定义好列名
 if 'recent_searches' not in st.session_state:
     st.session_state.recent_searches = pd.DataFrame(
         columns=["代码", "公司", "价格", "Trailing PE", "PEG 中枢"]
@@ -28,15 +24,14 @@ if 'recent_searches' not in st.session_state:
 
 # --- 3. 核心数据获取函数 ---
 
-@st.cache_data(ttl=3600)  # 将数据缓存1小时 (3600秒)
+@st.cache_data(ttl=3600)
 def get_stock_data(ticker):
     """
-    获取单个股票所需的所有数据 (YFinance + FMP)。
+    获取单个股票所需的所有数据 (主要使用 YFinance)。
     """
     yf_stock = yf.Ticker(ticker)
     
-    # 1. YFinance 数据
-    # 使用 .get() 方法安全地获取数据，如果键不存在则返回 0 或 "N/A"
+    # 1. YFinance 基础数据
     yf_info = yf_stock.info
     data = {
         "name": yf_info.get('longName', yf_info.get('shortName', ticker)),
@@ -48,61 +43,7 @@ def get_stock_data(ticker):
         "pe_fwd": yf_info.get('forwardPE', 0)
     }
     
-    # 2. FMP 数据 (分析师增长率 G)
-    url_g = f"https://financialmodelingprep.com/api/v3/analyst-estimates/{ticker}?apikey={FMP_API_KEY}"
-    try:
-        g_response = requests.get(url_g, timeout=10)
-        g_data = g_response.json()
-        # 安全地获取第一个条目中的增长率
-        if isinstance(g_data, list) and len(g_data) > 0 and isinstance(g_data[0], dict):
-            # 尝试多个可能的字段名
-            growth = g_data[0].get('estimatedRevenueAvg', 0)
-            if growth == 0:
-                growth = g_data[0].get('estimatedEpsAvg', 0)
-            data["g_consensus"] = float(growth) if growth else 10.0  # 默认10%
-        else:
-            data["g_consensus"] = 10.0  # 默认值
-    except (requests.RequestException, ValueError, KeyError, IndexError) as e:
-        st.warning(f"⚠️ 无法获取 FMP 增长率数据，使用默认值10%")
-        data["g_consensus"] = 10.0
-
-    # 3. FMP 数据 (历史PE, EPS - 5年 = 20个季度)
-    url_hist = f"https://financialmodelingprep.com/api/v3/ratios/{ticker}?period=quarter&limit=20&apikey={FMP_API_KEY}"
-    try:
-        hist_response = requests.get(url_hist, timeout=10)
-        hist_data = hist_response.json()
-        
-        if isinstance(hist_data, list) and len(hist_data) > 0:
-            hist_df = pd.DataFrame(hist_data).iloc[::-1]  # 倒序，使日期从早到晚
-            hist_df['date'] = pd.to_datetime(hist_df['date'])
-            hist_df = hist_df.set_index('date')
-            hist_df['priceEarningsRatio'] = pd.to_numeric(hist_df.get('priceEarningsRatio', 0), errors='coerce')
-            # 注意：FMP的ratios端点可能没有EPS，我们需要从income statement获取
-            data["hist_ratios"] = hist_df
-        else:
-            data["hist_ratios"] = pd.DataFrame()
-    except (requests.RequestException, ValueError, KeyError) as e:
-        st.warning(f"⚠️ 无法获取 FMP 历史比率数据")
-        data["hist_ratios"] = pd.DataFrame()
-
-    # 3b. 获取历史EPS数据
-    url_income = f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}?period=quarter&limit=20&apikey={FMP_API_KEY}"
-    try:
-        income_response = requests.get(url_income, timeout=10)
-        income_data = income_response.json()
-        
-        if isinstance(income_data, list) and len(income_data) > 0:
-            income_df = pd.DataFrame(income_data).iloc[::-1]
-            income_df['date'] = pd.to_datetime(income_df['date'])
-            income_df = income_df.set_index('date')
-            income_df['eps'] = pd.to_numeric(income_df.get('eps', 0), errors='coerce')
-            data["hist_income"] = income_df
-        else:
-            data["hist_income"] = pd.DataFrame()
-    except (requests.RequestException, ValueError, KeyError) as e:
-        data["hist_income"] = pd.DataFrame()
-
-    # 4. YFinance 数据 (历史价格 - 5年)
+    # 2. 获取历史价格数据（5年）
     try:
         hist_price = yf_stock.history(period="5y")
         if not hist_price.empty:
@@ -110,8 +51,90 @@ def get_stock_data(ticker):
         else:
             data["hist_price"] = pd.Series()
     except Exception as e:
-        st.warning(f"⚠️ 无法获取历史价格数据")
         data["hist_price"] = pd.Series()
+    
+    # 3. 获取历史财务数据（季度）
+    try:
+        # 获取季度收益数据
+        quarterly_earnings = yf_stock.quarterly_earnings
+        
+        if quarterly_earnings is not None and not quarterly_earnings.empty:
+            # YFinance 返回的是 DataFrame，包含 Revenue 和 Earnings 列
+            if 'Earnings' in quarterly_earnings.columns:
+                # 取最近20个季度的数据
+                hist_earnings = quarterly_earnings['Earnings'].head(20)
+                
+                # 计算每股收益 (如果有股本数据)
+                shares = yf_info.get('sharesOutstanding', 0)
+                if shares and shares > 0:
+                    hist_eps = hist_earnings / shares
+                else:
+                    # 如果没有股本数据，尝试直接从 info 获取历史 EPS
+                    hist_eps = hist_earnings  # 有些情况下 Earnings 已经是 EPS
+                
+                data["hist_eps"] = hist_eps
+            else:
+                data["hist_eps"] = pd.Series()
+        else:
+            data["hist_eps"] = pd.Series()
+            
+    except Exception as e:
+        data["hist_eps"] = pd.Series()
+    
+    # 4. 计算历史PE比率
+    try:
+        if not data["hist_price"].empty and not data["hist_eps"].empty:
+            # 按季度重采样价格数据
+            quarterly_price = data["hist_price"].resample('Q').last()
+            
+            # 对齐日期并计算PE
+            hist_pe_dict = {}
+            for date in data["hist_eps"].index:
+                # 找到最接近的价格日期
+                closest_date = quarterly_price.index[quarterly_price.index.get_indexer([date], method='nearest')[0]]
+                eps_val = data["hist_eps"][date]
+                price_val = quarterly_price[closest_date]
+                
+                if eps_val > 0:
+                    hist_pe_dict[date] = price_val / eps_val
+            
+            data["hist_pe"] = pd.Series(hist_pe_dict)
+        else:
+            data["hist_pe"] = pd.Series()
+    except Exception as e:
+        data["hist_pe"] = pd.Series()
+    
+    # 5. FMP 数据（分析师增长率预测）
+    url_g = f"https://financialmodelingprep.com/api/v3/analyst-estimates/{ticker}?apikey={FMP_API_KEY}"
+    try:
+        g_response = requests.get(url_g, timeout=10)
+        g_data = g_response.json()
+        
+        if isinstance(g_data, list) and len(g_data) > 0 and isinstance(g_data[0], dict):
+            # 尝试获取增长率
+            growth = g_data[0].get('estimatedEpsAvg', 0)
+            if not growth or growth == 0:
+                growth = g_data[0].get('estimatedRevenueAvg', 0)
+            
+            # 如果获取到的是绝对值而不是百分比，需要计算增长率
+            if growth and data['eps_fwd'] > 0 and data['eps_ttm'] > 0:
+                data["g_consensus"] = ((data['eps_fwd'] - data['eps_ttm']) / data['eps_ttm']) * 100
+            elif growth:
+                data["g_consensus"] = float(growth) if growth > 0 else 10.0
+            else:
+                data["g_consensus"] = 10.0
+        else:
+            # 使用 Forward EPS 和 Trailing EPS 计算增长率
+            if data['eps_fwd'] > 0 and data['eps_ttm'] > 0:
+                data["g_consensus"] = ((data['eps_fwd'] - data['eps_ttm']) / data['eps_ttm']) * 100
+            else:
+                data["g_consensus"] = 10.0
+    except Exception as e:
+        # 备用方案：从 Forward 和 Trailing EPS 计算
+        if data['eps_fwd'] > 0 and data['eps_ttm'] > 0:
+            data["g_consensus"] = ((data['eps_fwd'] - data['eps_ttm']) / data['eps_ttm']) * 100
+        else:
+            data["g_consensus"] = 10.0
     
     return data
 
@@ -127,21 +150,18 @@ def update_recent_list(ticker, data, price_mid_peg):
         "PEG 中枢": f"${price_mid_peg:.2f}" if price_mid_peg > 0 else "N/A"
     }
     
-    # 转换为 DataFrame 以便合并
     new_df_entry = pd.DataFrame([new_entry])
     
-    # 从旧记录中删除这个 ticker (如果存在)
     st.session_state.recent_searches = st.session_state.recent_searches[
         st.session_state.recent_searches['代码'] != ticker.upper()
     ]
     
-    # 将新记录添加到 DataFrame 顶部，并保持最多10条
     st.session_state.recent_searches = pd.concat(
         [new_df_entry, st.session_state.recent_searches],
         ignore_index=True
     ).head(10)
 
-# --- 4. 侧边栏 (Sidebar) 布局 ---
+# --- 4. 侧边栏布局 ---
 
 st.sidebar.title("📊 估值分析器")
 st.sidebar.caption("使用历史PE法与PEG法进行估值")
@@ -161,7 +181,7 @@ if not st.session_state.recent_searches.empty:
 else:
     st.sidebar.info("暂无搜索记录")
 
-# --- 5. 主面板 (Main Panel) 布局 ---
+# --- 5. 主面板布局 ---
 
 if search_button and ticker:
     with st.spinner(f"正在获取 {ticker} 的数据..."):
@@ -171,7 +191,6 @@ if search_button and ticker:
             # --- A. 核心指标 ---
             st.header(f"📈 {data['name']} ({ticker})")
             
-            # 检查数据是否有效
             if data['price'] == 0:
                 st.error(f"❌ 无法获取 {ticker} 的有效数据。请检查股票代码是否正确。")
                 st.stop()
@@ -192,7 +211,7 @@ if search_button and ticker:
             
             col1, col2 = st.columns(2)
             
-            price_mid_peg = 0.0  # 初始化PEG中枢价
+            price_mid_peg = 0.0
             
             # -- B1. 历史PE法 --
             with col1:
@@ -200,7 +219,7 @@ if search_button and ticker:
                     st.subheader("📈 模型一：历史PE法")
                     st.caption("基于 Trailing PE 的历史情绪回归")
                     
-                    hist_pe = data['hist_ratios'].get('priceEarningsRatio', pd.Series()).dropna() if not data['hist_ratios'].empty else pd.Series()
+                    hist_pe = data['hist_pe'].dropna() if not data['hist_pe'].empty else pd.Series()
                     
                     if not hist_pe.empty and len(hist_pe) >= 4:
                         p_mean = hist_pe.mean()
@@ -218,7 +237,6 @@ if search_button and ticker:
                             st.metric("🎯 估值中枢 (P * TTM EPS)", f"${price_mid_hist:.2f}")
                             st.write(f"💰 估值区间: **${price_low_hist:.2f} - ${price_high_hist:.2f}**")
                             
-                            # 可靠性检查
                             if price_low_hist <= data['price'] <= price_high_hist:
                                 st.success("✅ 可靠性: 当前价格在历史PE区间内。")
                             elif data['price'] > price_high_hist:
@@ -240,19 +258,20 @@ if search_button and ticker:
                     
                     g_c = data['g_consensus']
                     
-                    # G_History (我们用历史EPS的CAGR来计算)
-                    hist_eps = data['hist_income'].get('eps', pd.Series()).dropna() if not data['hist_income'].empty else pd.Series()
-                    g_h_default = 10.0 # 默认值
+                    # 计算历史EPS增长率 (CAGR)
+                    hist_eps = data['hist_eps'].dropna() if not data['hist_eps'].empty else pd.Series()
+                    g_h_default = 10.0
                     
-                    if len(hist_eps) >= 8:  # 至少2年数据
-                        # 计算CAGR
-                        start_eps = hist_eps.iloc[0]
-                        end_eps = hist_eps.iloc[-1]
-                        years = len(hist_eps) / 4.0 # 季度数据转为年
+                    if len(hist_eps) >= 8:
+                        start_eps = hist_eps.iloc[-1]  # 最早的
+                        end_eps = hist_eps.iloc[0]     # 最新的
+                        years = len(hist_eps) / 4.0
+                        
                         if start_eps > 0 and end_eps > 0 and years > 0:
                             g_h_default = ((end_eps / start_eps) ** (1/years) - 1) * 100.0
+                            g_h_default = max(-50.0, min(g_h_default, 100.0))  # 限制在合理范围
 
-                    g_h = st.number_input("📊 历史EPS增长率 % (CAGR)", value=max(0.0, min(g_h_default, 100.0)), step=0.5, key="g_history_input", help="基于历史EPS数据自动计算的年复合增长率")
+                    g_h = st.number_input("📊 历史EPS增长率 % (CAGR)", value=g_h_default, step=0.5, key="g_history_input", help="基于历史EPS数据自动计算的年复合增长率")
                     
                     weight = st.slider("⚖️ 分析师G权重 (W_c)", 0.0, 1.0, 0.7, 0.05, key="g_weight_slider", help="1.0=完全相信分析师预测, 0.0=完全相信历史增长率")
                     g_blended = (g_c * weight) + (g_h * (1 - weight))
@@ -284,7 +303,6 @@ if search_button and ticker:
                     else:
                         st.error("⚠️ 增长率为负或零，或PE数据无效，PEG法失效。")
             
-            # 更新历史记录
             update_recent_list(ticker, data, price_mid_peg)
 
             # --- C. 历史图表 ---
@@ -302,15 +320,15 @@ if search_button and ticker:
             
             with chart_cols[1]:
                 st.subheader("📈 历史 PE 比率")
-                if not data['hist_ratios'].empty and 'priceEarningsRatio' in data['hist_ratios'].columns:
-                    st.line_chart(data['hist_ratios']['priceEarningsRatio'], height=300)
+                if not data['hist_pe'].empty:
+                    st.line_chart(data['hist_pe'], height=300)
                 else:
                     st.info("暂无PE历史数据")
             
             with chart_cols[2]:
-                st.subheader("💵 历史 EPS (TTM)")
-                if not data['hist_income'].empty and 'eps' in data['hist_income'].columns:
-                    st.bar_chart(data['hist_income']['eps'], height=300)
+                st.subheader("💵 历史 EPS (季度)")
+                if not data['hist_eps'].empty:
+                    st.bar_chart(data['hist_eps'], height=300)
                 else:
                     st.info("暂无EPS历史数据")
 
@@ -323,7 +341,7 @@ if search_button and ticker:
 elif not ticker and search_button:
     st.warning("⚠️ 请输入股票代码")
 else:
-    st.info('请在侧边栏输入股票代码并点击"搜索"以开始分析。')
+    st.info("请在侧边栏输入股票代码并点击搜索以开始分析。")
     
     with st.expander("💡 使用说明"):
         st.markdown("""
