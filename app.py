@@ -27,7 +27,7 @@ if 'recent_searches' not in st.session_state:
 @st.cache_data(ttl=3600)
 def get_stock_data(ticker):
     """
-    获取单个股票所需的所有数据 (主要使用 YFinance)。
+    获取单个股票所需的所有数据 (优化版 - 更可靠的数据源)。
     """
     yf_stock = yf.Ticker(ticker)
     
@@ -53,106 +53,81 @@ def get_stock_data(ticker):
     except Exception as e:
         data["hist_price"] = pd.Series()
     
-    # 3. 获取历史财务数据（使用quarterly_income_stmt）
+    # 3. 计算历史PE（基于价格波动和当前PE）
+    # 核心思想：历史PE ≈ (历史价格 / 当前价格) × 当前PE
     try:
-        # 获取季度损益表
-        quarterly_income = yf_stock.quarterly_income_stmt
-        
-        if quarterly_income is not None and not quarterly_income.empty:
-            # 获取净利润和股本
-            if 'Net Income' in quarterly_income.index:
-                net_income = quarterly_income.loc['Net Income']
-                
-                # 获取稀释后股本（更准确）
-                if 'Diluted Average Shares' in quarterly_income.index:
-                    shares = quarterly_income.loc['Diluted Average Shares']
-                    # 计算EPS
-                    hist_eps = net_income / shares
-                    hist_eps = hist_eps.dropna()
-                    # 只取最近20个季度
-                    data["hist_eps"] = hist_eps.head(20)
-                else:
-                    data["hist_eps"] = pd.Series()
-            else:
-                data["hist_eps"] = pd.Series()
-        else:
-            data["hist_eps"] = pd.Series()
+        if not data["hist_price"].empty and data.get('pe_ttm') and data['pe_ttm'] > 0 and data['price'] > 0:
+            # 按季度重采样
+            quarterly_price = data["hist_price"].resample('Q').last()
             
-    except Exception as e:
-        data["hist_eps"] = pd.Series()
-    
-    # 4. 计算历史PE比率（使用当前TTM PE作为参考）
-    try:
-        if not data["hist_price"].empty and data.get('eps_ttm') and data['eps_ttm'] > 0:
-            # 方法1: 如果有历史EPS，直接计算
-            if not data["hist_eps"].empty:
-                # 按季度重采样价格数据
-                quarterly_price = data["hist_price"].resample('Q').last()
-                
-                hist_pe_list = []
-                for date in data["hist_eps"].index:
-                    try:
-                        # 找到最接近的价格
-                        price_date = quarterly_price.index[quarterly_price.index <= date][-1] if any(quarterly_price.index <= date) else None
-                        
-                        if price_date is not None:
-                            eps_val = data["hist_eps"][date]
-                            price_val = quarterly_price[price_date]
-                            
-                            if eps_val > 0:
-                                hist_pe_list.append((date, price_val / eps_val))
-                    except:
-                        continue
-                
-                if hist_pe_list:
-                    data["hist_pe"] = pd.Series({date: pe for date, pe in hist_pe_list})
-                else:
-                    data["hist_pe"] = pd.Series()
-            else:
-                # 方法2: 如果没有历史EPS，用当前PE * (历史价格/当前价格) 估算
-                current_pe = data.get('pe_ttm', 0)
-                if current_pe and current_pe > 0 and data['price'] > 0:
-                    quarterly_price = data["hist_price"].resample('Q').last()
-                    hist_pe_estimate = (quarterly_price / data['price']) * current_pe
-                    data["hist_pe"] = hist_pe_estimate.dropna()
-                else:
-                    data["hist_pe"] = pd.Series()
+            # 估算历史PE
+            hist_pe = (quarterly_price / data['price']) * data['pe_ttm']
+            
+            # 过滤异常值（PE在5-200之间才合理）
+            hist_pe = hist_pe[(hist_pe > 5) & (hist_pe < 200)]
+            
+            data["hist_pe"] = hist_pe
         else:
             data["hist_pe"] = pd.Series()
     except Exception as e:
         data["hist_pe"] = pd.Series()
     
-    # 5. 分析师增长率预测（多重备用方案）
-    growth_rate = 10.0  # 默认值
-    
-    # 方案1: 尝试从FMP获取
-    url_g = f"https://financialmodelingprep.com/api/v3/analyst-estimates/{ticker}?apikey={FMP_API_KEY}"
+    # 4. 计算历史EPS（用历史价格 / 历史PE）
     try:
-        g_response = requests.get(url_g, timeout=10)
-        g_data = g_response.json()
-        
-        if isinstance(g_data, list) and len(g_data) > 0 and isinstance(g_data[0], dict):
-            est_eps = g_data[0].get('estimatedEpsAvg', 0)
-            if est_eps and est_eps > 0 and data['eps_ttm'] > 0:
-                # 计算增长率
-                growth_rate = ((est_eps - data['eps_ttm']) / data['eps_ttm']) * 100
-    except:
-        pass
+        if not data["hist_price"].empty and not data["hist_pe"].empty:
+            quarterly_price = data["hist_price"].resample('Q').last()
+            
+            # 对齐日期
+            hist_eps_dict = {}
+            for date in data["hist_pe"].index:
+                if date in quarterly_price.index:
+                    price_val = quarterly_price[date]
+                    pe_val = data["hist_pe"][date]
+                    if pe_val > 0:
+                        hist_eps_dict[date] = price_val / pe_val
+            
+            data["hist_eps"] = pd.Series(hist_eps_dict)
+        else:
+            data["hist_eps"] = pd.Series()
+    except Exception as e:
+        data["hist_eps"] = pd.Series()
     
-    # 方案2: 如果FMP失败，用Forward/Trailing EPS计算
-    if growth_rate == 10.0 and data['eps_fwd'] > 0 and data['eps_ttm'] > 0:
+    # 5. 分析师增长率预测（多重备用方案）
+    growth_rate = None
+    
+    # 方案1: 从Forward/Trailing EPS计算（最可靠）
+    if data['eps_fwd'] > 0 and data['eps_ttm'] > 0:
         growth_rate = ((data['eps_fwd'] - data['eps_ttm']) / data['eps_ttm']) * 100
     
-    # 方案3: 从YFinance获取分析师增长预测
-    if growth_rate == 10.0:
+    # 方案2: 尝试从FMP获取
+    if growth_rate is None or abs(growth_rate) > 100:
+        url_g = f"https://financialmodelingprep.com/api/v3/analyst-estimates/{ticker}?apikey={FMP_API_KEY}"
         try:
-            analyst_info = yf_stock.analyst_price_targets
-            if analyst_info is not None and 'growth' in analyst_info:
-                growth_rate = analyst_info['growth'] * 100
+            g_response = requests.get(url_g, timeout=10)
+            g_data = g_response.json()
+            
+            if isinstance(g_data, list) and len(g_data) > 0:
+                est_eps = g_data[0].get('estimatedEpsAvg', 0)
+                if est_eps and est_eps > 0 and data['eps_ttm'] > 0:
+                    growth_rate = ((est_eps - data['eps_ttm']) / data['eps_ttm']) * 100
         except:
             pass
     
-    # 限制增长率在合理范围内 (-50% 到 200%)
+    # 方案3: 从YFinance获取行业平均增长率
+    if growth_rate is None:
+        try:
+            # 尝试获取5年EPS增长率
+            growth_5y = yf_info.get('earningsQuarterlyGrowth', None)
+            if growth_5y:
+                growth_rate = growth_5y * 100
+        except:
+            pass
+    
+    # 最终默认值
+    if growth_rate is None:
+        growth_rate = 10.0
+    
+    # 限制增长率在合理范围内
     growth_rate = max(-50.0, min(growth_rate, 200.0))
     
     data["g_consensus"] = growth_rate
