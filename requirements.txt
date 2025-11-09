@@ -3,3 +3,4 @@ yfinance
 requests
 pandas
 numpy
+altair
