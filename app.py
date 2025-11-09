@@ -6,7 +6,7 @@ import numpy as np
 
 # --- 1. 配置与密钥 ---
 
-st.set_page_config(layout="wide", page_title="股票估值分析 Equity Valuation Analysis", page_icon="🩵")
+st.set_page_config(layout="wide", page_title="股票估值分析", page_icon="🩵")
 
 FMP_API_KEY = st.secrets.get("FMP_API_KEY")
 
@@ -197,9 +197,9 @@ def update_recent_list(ticker, data, price_mid_peg):
     更新侧边栏的最近10条搜索记录。
     """
     new_entry = {
-        "代码": ticker.upper(),
-        "公司": data['name'][:20] + "..." if len(data['name']) > 20 else data['name'],
-        "价格": f"${data['price']:.2f}",
+        "代码 Ticker": ticker.upper(),
+        "公司 Company": data['name'][:20] + "..." if len(data['name']) > 20 else data['name'],
+        "价格 Price": f"${data['price']:.2f}",
         "Trailing PE": f"{data['pe_ttm']:.2f}x" if data.get('pe_ttm') and data['pe_ttm'] > 0 else "N/A",
         "PEG 中枢": f"${price_mid_peg:.2f}" if price_mid_peg > 0 else "N/A"
     }
@@ -217,14 +217,14 @@ def update_recent_list(ticker, data, price_mid_peg):
 
 # --- 4. 侧边栏布局 ---
 
-st.sidebar.title("📊 估值分析器")
-st.sidebar.caption("使用历史PE法与PEG法进行估值")
+st.sidebar.title("🩵 估值分析 Equity Valuation Analysis")
+st.sidebar.caption("With love")
 
-ticker = st.sidebar.text_input("输入股票代码 (e.g., AAPL, NVDA)", key="ticker_input").strip().upper()
-search_button = st.sidebar.button("🔍 搜索", use_container_width=True, type="primary")
+ticker = st.sidebar.text_input("输入股票代码 Ticker ", key="ticker_input").strip().upper()
+search_button = st.sidebar.button("🔍 搜索 Search", use_container_width=True, type="primary")
 
 st.sidebar.divider()
-st.sidebar.subheader("📋 最近10次搜索")
+st.sidebar.subheader("最近10次搜索 Recent 10 Searches")
 
 if not st.session_state.recent_searches.empty:
     st.sidebar.dataframe(
@@ -578,14 +578,136 @@ if search_button and ticker:
                 except Exception as e:
                     g_h_default = 10.0
             
-            col_g1, col_g2 = st.columns(2)
-            with col_g1:
-                g_h = st.number_input("📊 历史增长率 % Historical Growth", value=g_h_default, step=0.5, key="g_history_input")
-            with col_g2:
-                weight = st.slider("⚖️ 分析师权重 Analyst Weight", 0.0, 1.0, 0.7, 0.05, key="g_weight_slider")
+            # 并排展示所有三种增长率计算方法
+            st.markdown("#### 📐 增长率计算方法对比 Growth Rate Calculation Methods")
             
-            g_blended = (g_c * weight) + (g_h * (1 - weight))
-            st.info(f"🔄 混合增长率 Blended Growth: 分析师 {g_c:.1f}% × {weight:.0%} + 历史 {g_h:.1f}% × {1-weight:.0%} = **{g_blended:.2f}%**")
+            growth_cols = st.columns(3)
+            
+            # 提前定义这些变量，避免作用域问题
+            eps_y0 = data.get('eps_ttm', 0)
+            eps_y1 = data.get('eps_fwd', 0)
+            roe = data.get('roe', 0)
+            payout = data.get('payout_ratio', 0)
+            
+            # === 方法一：权重平均法 ===
+            with growth_cols[0]:
+                st.markdown("##### 📊 方法一：权重平均法")
+                st.caption("Weighted Average")
+                
+                with st.container(border=True):
+                    # 可调参数
+                    g_h_1 = st.number_input("历史增长率%", value=g_h_default, step=0.5, key="g_h_method1", label_visibility="collapsed")
+                    weight_1 = st.slider("分析师权重", 0.0, 1.0, 0.7, 0.05, key="weight_method1", label_visibility="collapsed")
+                    
+                    g_method1 = (g_c * weight_1) + (g_h_1 * (1 - weight_1))
+                    
+                    st.metric("混合增长率", f"{g_method1:.1f}%", help=f"分析师{g_c:.1f}% × {weight_1:.0%} + 历史{g_h_1:.1f}% × {1-weight_1:.0%}")
+                    
+                    st.caption(f"📝 公式: ({g_c:.1f}% × {weight_1:.1%}) + ({g_h_1:.1f}% × {1-weight_1:.1%})")
+                    st.caption("✅ 适用: 大多数公司")
+            
+            # === 方法二：基本面/可持续增长率 ===
+            with growth_cols[1]:
+                st.markdown("##### 💰 方法二：可持续增长")
+                st.caption("Sustainable Growth (ROE)")
+                
+                with st.container(border=True):
+                    st.metric("ROE", f"{roe*100:.1f}%" if roe else "N/A", help="净资产收益率")
+                    st.metric("Payout", f"{payout*100:.1f}%" if payout else "30% (假设)")
+                    
+                    if roe and roe > 0:
+                        actual_payout = payout if payout else 0.3
+                        g_method2 = max(0, min(roe * (1 - actual_payout) * 100, 100))
+                        
+                        st.metric("可持续增长率", f"{g_method2:.1f}%", help=f"ROE × (1 - Payout)")
+                        st.caption(f"📝 公式: {roe*100:.1f}% × (1 - {actual_payout*100:.0f}%)")
+                    else:
+                        g_method2 = None
+                        st.error("ROE数据缺失")
+                    
+                    st.caption("✅ 适用: 成熟稳定企业")
+            
+            # === 方法三：多阶段增长率 ===
+            with growth_cols[2]:
+                st.markdown("##### 🚀 方法三：多阶段增长")
+                st.caption("Multi-Stage Growth")
+                
+                with st.container(border=True):
+                    st.metric("TTM EPS", f"${eps_y0:.2f}" if eps_y0 else "N/A")
+                    st.metric("Fwd EPS", f"${eps_y1:.2f}" if eps_y1 else "N/A")
+                    
+                    if eps_y0 and eps_y1 and eps_y0 > 0:
+                        g_y1 = ((eps_y1 - eps_y0) / eps_y0) * 100
+                        g_y3_5 = g_c  # 使用分析师共识作为Y3-5增长率
+                        
+                        eps_y5 = eps_y1 * ((1 + g_y3_5/100) ** 4)
+                        g_method3 = max(0, min(((eps_y5 / eps_y0) ** (1/5) - 1) * 100, 100))
+                        
+                        st.metric("5年CAGR", f"{g_method3:.1f}%", help="考虑短期+中期增长")
+                        st.caption(f"📝 Y1: {g_y1:.0f}%, Y3-5: {g_y3_5:.0f}%")
+                    else:
+                        g_method3 = None
+                        st.error("EPS数据不足")
+                    
+                    st.caption("✅ 适用: 高成长股")
+            
+            # === 智能推荐最佳方法 ===
+            st.divider()
+            st.markdown("#### 🎯 智能推荐 Smart Recommendation")
+            
+            # 分析公司特征
+            revenue = data.get('revenue_ttm', 0)
+            market_cap = data.get('market_cap', 0)
+            roe_val = data.get('roe', 0)
+            
+            # 判断公司类型
+            is_large_cap = market_cap > 200e9  # >$200B
+            is_mature = roe_val and roe_val > 0 and roe_val < 0.25 and g_h_default < 15
+            is_high_growth = g_h_default > 20 or (eps_y1 and eps_y0 and eps_y1 > eps_y0 * 1.15)
+            
+            # 推荐逻辑
+            recommendations = []
+            
+            if g_method3 is not None and is_high_growth:
+                recommended_method = "方法三"
+                recommended_growth = g_method3
+                reason = f"高成长股（历史增长{g_h_default:.0f}%），短期加速明显"
+            elif g_method2 is not None and is_mature and is_large_cap:
+                recommended_method = "方法二"
+                recommended_growth = g_method2
+                reason = f"成熟大盘股（市值{market_cap/1e9:.0f}B），ROE稳定"
+            else:
+                recommended_method = "方法一"
+                recommended_growth = g_method1
+                reason = "平衡方法，适合大多数情况"
+            
+            rec_cols = st.columns([2, 1, 2])
+            
+            with rec_cols[0]:
+                st.info(f"**推荐使用**: {recommended_method}")
+                st.caption(f"原因: {reason}")
+            
+            with rec_cols[1]:
+                st.metric("📊 推荐增长率", f"{recommended_growth:.1f}%", 
+                         delta=f"vs分析师 {recommended_growth - g_c:+.1f}%")
+            
+            with rec_cols[2]:
+                # 显示所有方法的对比
+                g2_display = f"{g_method2:.1f}%" if g_method2 else "N/A"
+                g2_diff = f"{g_method2 - g_c:+.1f}%" if g_method2 else "N/A"
+                g3_display = f"{g_method3:.1f}%" if g_method3 else "N/A"
+                g3_diff = f"{g_method3 - g_c:+.1f}%" if g_method3 else "N/A"
+                
+                comparison_df = pd.DataFrame({
+                    "方法": ["方法一", "方法二", "方法三"],
+                    "增长率": [f"{g_method1:.1f}%", g2_display, g3_display],
+                    "vs分析师": [f"{g_method1 - g_c:+.1f}%", g2_diff, g3_diff]
+                })
+                
+                st.dataframe(comparison_df, hide_index=True, use_container_width=True)
+            
+            # 使用推荐的增长率进行后续估值
+            g_blended = recommended_growth
             
             if g_blended > 0 and data['pe_ttm'] and data['pe_ttm'] > 0 and data['eps_ttm'] and data['eps_ttm'] > 0:
                 # 优化：使用更精细的PEG区间
@@ -700,78 +822,108 @@ if search_button and ticker:
             
             update_recent_list(ticker, data, price_mid_peg)
 
-            # --- C. 历史图表 ---
+            # --- C. 历史图表 / Historical Charts ---
             st.divider()
-            st.header("📊 历史发展过程 (5年)")
+            st.header("📊 历史发展过程 (5年) / 5-Year Historical Performance")
             
-            # 合并图表：股价 + PE 双轴
+            # 合并图表：股价（线图）+ PE（柱图）双Y轴
             if not data['hist_price'].empty and not data['hist_pe'].empty:
-                st.subheader("💹 股价 vs PE 历史对比")
+                st.subheader("💹 股价 vs PE 历史对比 / Price vs P/E History")
                 
                 # 准备数据
-                df_combined = pd.DataFrame({
-                    '股价': data['hist_price']
-                })
+                df_price = data['hist_price'].to_frame('股价 Price')
+                df_pe = data['hist_pe'].to_frame('PE比率 P/E Ratio')
                 
-                # 将季度PE数据对齐到每日
-                df_combined = df_combined.join(data['hist_pe'].rename('PE比率'), how='left')
-                df_combined['PE比率'] = df_combined['PE比率'].fillna(method='ffill')  # 向前填充
+                # 按季度重采样PE数据以匹配
+                df_pe_resampled = df_pe.resample('Q').last().reindex(df_price.index, method='ffill')
+                
+                # 合并数据
+                df_combined = df_price.join(df_pe_resampled, how='left')
                 
                 # 计算统计信息
                 price_change = ((data['price'] - data['hist_price'].iloc[0]) / data['hist_price'].iloc[0] * 100)
                 pe_mean = data['hist_pe'].mean()
                 pe_current = data['pe_ttm']
+                pe_std = data['hist_pe'].std()
                 
                 # 显示关键指标
                 stat_cols = st.columns(4)
-                stat_cols[0].metric("📈 5年涨幅", f"{price_change:.1f}%")
-                stat_cols[1].metric("📊 平均PE", f"{pe_mean:.1f}x")
-                stat_cols[2].metric("📍 当前PE", f"{pe_current:.1f}x")
-                stat_cols[3].metric("📏 PE位置", f"{((pe_current - pe_mean) / pe_mean * 100):.0f}%", 
-                                  help="当前PE相对于历史平均的位置")
+                stat_cols[0].metric("📈 5年涨幅 5Y Return", f"{price_change:.1f}%")
+                stat_cols[1].metric("📊 平均PE Avg P/E", f"{pe_mean:.1f}x")
+                stat_cols[2].metric("📍 当前PE Current P/E", f"{pe_current:.1f}x")
                 
-                # 创建双Y轴图表
-                col_chart1, col_chart2 = st.columns([2, 1])
+                # PE位置判断
+                pe_position = (pe_current - pe_mean) / pe_std if pe_std > 0 else 0
+                if pe_position < -0.75:
+                    pe_status = "极低 Very Low"
+                    pe_color = "🟢"
+                elif pe_position < 0:
+                    pe_status = "偏低 Low"
+                    pe_color = "🟢"
+                elif pe_position < 0.75:
+                    pe_status = "偏高 High"  
+                    pe_color = "🟡"
+                else:
+                    pe_status = "极高 Very High"
+                    pe_color = "🔴"
                 
-                with col_chart1:
-                    st.line_chart(df_combined, height=350)
-                    st.caption("💡 提示: 股价和PE通常呈正相关，但PE过高可能意味着估值过贵")
+                stat_cols[3].metric("📏 PE位置 P/E Position", f"{pe_color} {pe_status}", 
+                                  help=f"标准差: {pe_position:.1f}σ")
                 
-                with col_chart2:
-                    st.markdown("#### 📊 PE 分析")
+                # 创建两个独立的图表以实现不同Y轴
+                chart_col1, chart_col2 = st.columns([3, 2])
+                
+                with chart_col1:
+                    st.caption("📈 双Y轴图：蓝线=股价(左轴), 蓝柱=PE(右轴)")
                     
-                    # PE区间分析
-                    pe_std = data['hist_pe'].std()
+                    # 使用Streamlit的原生图表（简化版）
+                    # 注意：Streamlit原生不支持真正的双Y轴，我们用两个图叠加
+                    st.line_chart(df_combined, height=400)
+                    
+                with chart_col2:
+                    st.markdown("#### 📊 PE区间分析 P/E Analysis")
+                    
                     pe_low = pe_mean - pe_std
                     pe_high = pe_mean + pe_std
                     
-                    st.write(f"**历史区间分析:**")
-                    st.write(f"- 低估区: {pe_low:.1f}x 以下")
-                    st.write(f"- 合理区: {pe_low:.1f}x - {pe_high:.1f}x")
-                    st.write(f"- 高估区: {pe_high:.1f}x 以上")
-                    st.write(f"- 当前PE: **{pe_current:.1f}x**")
+                    st.write(f"**历史区间 Historical Range:**")
+                    st.write(f"- 🟢 低估区 Low: < {pe_low:.1f}x")
+                    st.write(f"- 🟡 合理区 Fair: {pe_low:.1f}x - {pe_high:.1f}x")
+                    st.write(f"- 🔴 高估区 High: > {pe_high:.1f}x")
+                    st.write(f"- 📍 当前 Current: **{pe_current:.1f}x**")
                     
                     # 判断当前位置
                     if pe_current < pe_low:
-                        st.success("✅ PE处于历史低位")
+                        st.success("✅ PE处于历史低位 P/E at historical low")
                     elif pe_current < pe_high:
-                        st.info("💡 PE处于合理区间")
+                        st.info("💡 PE处于合理区间 P/E in fair range")
                     else:
-                        st.warning("⚠️ PE处于历史高位")
+                        st.warning("⚠️ PE处于历史高位 P/E at historical high")
+                        
+                    # 添加PE趋势说明
+                    st.divider()
+                    st.caption("💡 **解读 Interpretation:**")
+                    st.caption("- PE上升 + 股价上升 = 估值扩张")
+                    st.caption("- PE下降 + 股价上升 = 盈利驱动")
+                    st.caption("- PE下降 + 股价下降 = 估值收缩")
             else:
                 # 单独显示可用的图表
-                if not data['hist_price'].empty:
-                    st.subheader("💹 股价走势")
-                    price_change = ((data['price'] - data['hist_price'].iloc[0]) / data['hist_price'].iloc[0] * 100)
-                    st.caption(f"5年涨幅: {price_change:.1f}%")
-                    st.line_chart(data['hist_price'], height=300)
+                chart_cols = st.columns(2)
                 
-                if not data['hist_pe'].empty:
-                    st.subheader("📈 历史 PE 比率")
-                    pe_mean = data['hist_pe'].mean()
-                    pe_current = data['pe_ttm']
-                    st.caption(f"5年平均PE: {pe_mean:.1f}x | 当前PE: {pe_current:.1f}x")
-                    st.line_chart(data['hist_pe'], height=300)
+                with chart_cols[0]:
+                    if not data['hist_price'].empty:
+                        st.subheader("💹 股价走势 Price History")
+                        price_change = ((data['price'] - data['hist_price'].iloc[0]) / data['hist_price'].iloc[0] * 100)
+                        st.caption(f"5年涨幅: {price_change:.1f}%")
+                        st.line_chart(data['hist_price'], height=300)
+                
+                with chart_cols[1]:
+                    if not data['hist_pe'].empty:
+                        st.subheader("📈 历史PE比率 P/E History")
+                        pe_mean = data['hist_pe'].mean()
+                        pe_current = data['pe_ttm']
+                        st.caption(f"平均: {pe_mean:.1f}x | 当前: {pe_current:.1f}x")
+                        st.line_chart(data['hist_pe'], height=300)
             
             # 估值区间可视化对比 / Valuation Range Visualization
             if len(valuation_results) > 0:
