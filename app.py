@@ -115,6 +115,44 @@ def get_stock_data(ticker):
     
     data["g_consensus"] = growth_rate
     
+    # 6. 获取分析师目标价
+    try:
+        # YFinance提供分析师目标价数据
+        analyst_info = yf_info.get('targetMeanPrice', None)
+        analyst_high = yf_info.get('targetHighPrice', None)
+        analyst_low = yf_info.get('targetLowPrice', None)
+        analyst_median = yf_info.get('targetMedianPrice', None)
+        num_analysts = yf_info.get('numberOfAnalystOpinions', None)
+        
+        data["analyst_target"] = {
+            'mean': analyst_info if analyst_info else 0,
+            'high': analyst_high if analyst_high else 0,
+            'low': analyst_low if analyst_low else 0,
+            'median': analyst_median if analyst_median else 0,
+            'count': num_analysts if num_analysts else 0
+        }
+        
+        # 尝试从FMP获取更详细的分析师评级
+        url_rating = f"https://financialmodelingprep.com/api/v3/rating/{ticker}?apikey={FMP_API_KEY}"
+        try:
+            rating_response = requests.get(url_rating, timeout=10)
+            rating_data = rating_response.json()
+            
+            if isinstance(rating_data, list) and len(rating_data) > 0:
+                latest_rating = rating_data[0]
+                data["analyst_rating"] = {
+                    'recommendation': latest_rating.get('rating', 'N/A'),
+                    'target_price': latest_rating.get('ratingDetailsDCFScore', 0)
+                }
+            else:
+                data["analyst_rating"] = {'recommendation': 'N/A', 'target_price': 0}
+        except:
+            data["analyst_rating"] = {'recommendation': 'N/A', 'target_price': 0}
+            
+    except Exception as e:
+        data["analyst_target"] = {'mean': 0, 'high': 0, 'low': 0, 'median': 0, 'count': 0}
+        data["analyst_rating"] = {'recommendation': 'N/A', 'target_price': 0}
+    
     return data
 
 def update_recent_list(ticker, data, price_mid_peg):
@@ -183,6 +221,39 @@ if search_button and ticker:
             cols_eps = st.columns(4)
             cols_eps[1].metric("💵 Trailing EPS (TTM)", f"${data['eps_ttm']:.2f}" if data['eps_ttm'] else "N/A")
             cols_eps[2].metric("🎯 Forward EPS (远期)", f"${data['eps_fwd']:.2f}" if data['eps_fwd'] else "N/A")
+            
+            # 分析师目标价
+            if data.get('analyst_target') and data['analyst_target']['mean'] > 0:
+                st.divider()
+                st.subheader("🎯 分析师目标价")
+                
+                target_cols = st.columns([1, 2, 1])
+                
+                with target_cols[1]:
+                    analyst_mean = data['analyst_target']['mean']
+                    analyst_high = data['analyst_target']['high']
+                    analyst_low = data['analyst_target']['low']
+                    num_analysts = data['analyst_target']['count']
+                    
+                    # 显示目标价区间
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("📉 最低目标价", f"${analyst_low:.2f}" if analyst_low > 0 else "N/A")
+                    col2.metric("🎯 平均目标价", f"${analyst_mean:.2f}")
+                    col3.metric("📈 最高目标价", f"${analyst_high:.2f}" if analyst_high > 0 else "N/A")
+                    
+                    # 上涨空间
+                    if analyst_mean > 0:
+                        upside = ((analyst_mean - data['price']) / data['price']) * 100
+                        
+                        if upside > 0:
+                            st.success(f"💰 **分析师共识**: 基于 {num_analysts} 位分析师的预测，目标价 ${analyst_mean:.2f}，上涨空间 **+{upside:.1f}%**")
+                        else:
+                            st.warning(f"⚠️ **分析师共识**: 基于 {num_analysts} 位分析师的预测，目标价 ${analyst_mean:.2f}，下跌风险 **{upside:.1f}%**")
+                    
+                    # 显示评级（如果有）
+                    if data.get('analyst_rating') and data['analyst_rating']['recommendation'] != 'N/A':
+                        st.info(f"📊 **最新评级**: {data['analyst_rating']['recommendation']}")
+            
             st.divider()
 
             # --- B. 估值对比：当前价格 vs 合理区间 ---
@@ -337,11 +408,18 @@ if search_button and ticker:
                 avg_mid = sum(all_mids) / len(all_mids)
                 avg_high = sum(all_highs) / len(all_highs)
                 
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("📍 当前价格", f"${data['price']:.2f}")
-                col2.metric("🔻 综合低估区", f"${avg_low:.2f}")
-                col3.metric("🎯 综合合理价", f"${avg_mid:.2f}")
-                col4.metric("🔺 综合高估区", f"${avg_high:.2f}")
+                # 添加分析师目标价（如果有）
+                analyst_mean = data.get('analyst_target', {}).get('mean', 0)
+                num_cols = 5 if analyst_mean > 0 else 4
+                
+                cols = st.columns(num_cols)
+                cols[0].metric("📍 当前价格", f"${data['price']:.2f}")
+                cols[1].metric("🔻 综合低估区", f"${avg_low:.2f}")
+                cols[2].metric("🎯 综合合理价", f"${avg_mid:.2f}")
+                cols[3].metric("🔺 综合高估区", f"${avg_high:.2f}")
+                
+                if analyst_mean > 0:
+                    cols[4].metric("🏦 分析师目标", f"${analyst_mean:.2f}")
                 
                 # 最终建议
                 if data['price'] < avg_low:
@@ -355,6 +433,16 @@ if search_button and ticker:
                 else:
                     downside = ((data['price'] - avg_mid) / data['price'] * 100)
                     st.warning(f"### ⚠️ **投资建议: 考虑减仓** \n当前价格被高估约 **{downside:.1f}%**，建议等待回调。")
+                
+                # 对比分析师目标价
+                if analyst_mean > 0:
+                    analyst_vs_model = ((analyst_mean - avg_mid) / avg_mid * 100)
+                    if abs(analyst_vs_model) < 10:
+                        st.success(f"✅ **估值一致性**: 分析师目标价 (${analyst_mean:.2f}) 与模型估值基本一致，相差 {abs(analyst_vs_model):.1f}%")
+                    elif analyst_mean > avg_mid:
+                        st.info(f"📊 **估值对比**: 分析师目标价 (${analyst_mean:.2f}) 比模型估值高 {analyst_vs_model:.1f}%，市场预期更乐观")
+                    else:
+                        st.warning(f"📊 **估值对比**: 分析师目标价 (${analyst_mean:.2f}) 比模型估值低 {abs(analyst_vs_model):.1f}%，市场预期更谨慎")
             
             update_recent_list(ticker, data, price_mid_peg)
 
