@@ -72,25 +72,8 @@ def get_stock_data(ticker):
     except Exception as e:
         data["hist_pe"] = pd.Series()
     
-    # 4. 计算历史EPS（用历史价格 / 历史PE）
-    try:
-        if not data["hist_price"].empty and not data["hist_pe"].empty:
-            quarterly_price = data["hist_price"].resample('Q').last()
-            
-            # 对齐日期
-            hist_eps_dict = {}
-            for date in data["hist_pe"].index:
-                if date in quarterly_price.index:
-                    price_val = quarterly_price[date]
-                    pe_val = data["hist_pe"][date]
-                    if pe_val > 0:
-                        hist_eps_dict[date] = price_val / pe_val
-            
-            data["hist_eps"] = pd.Series(hist_eps_dict)
-        else:
-            data["hist_eps"] = pd.Series()
-    except Exception as e:
-        data["hist_eps"] = pd.Series()
+    # 4. 历史EPS：不计算，直接用空Series（因为反推的EPS不准确）
+    data["hist_eps"] = pd.Series()
     
     # 5. 分析师增长率预测（多重备用方案）
     growth_rate = None
@@ -263,22 +246,30 @@ if search_button and ticker:
             
             g_c = data['g_consensus']
             
-            # 计算历史增长率
-            hist_eps = data['hist_eps'].dropna() if not data['hist_eps'].empty else pd.Series()
+            # 计算历史增长率（用历史价格CAGR）
             g_h_default = 10.0
             
-            if len(hist_eps) >= 8:
-                hist_eps_sorted = hist_eps.sort_index()
-                start_eps = hist_eps_sorted.iloc[0]
-                end_eps = hist_eps_sorted.iloc[-1]
-                years = len(hist_eps_sorted) / 4.0
-                
-                if start_eps > 0 and end_eps > 0 and years > 0:
-                    try:
-                        g_h_default = ((end_eps / start_eps) ** (1/years) - 1) * 100.0
-                        g_h_default = max(-50.0, min(g_h_default, 100.0))
-                    except:
-                        g_h_default = 10.0
+            if not data['hist_price'].empty:
+                try:
+                    prices_sorted = data['hist_price'].sort_index()
+                    
+                    # 确保有足够的历史数据（至少1年）
+                    if len(prices_sorted) >= 252:  # 252个交易日约等于1年
+                        start_price = prices_sorted.iloc[0]
+                        end_price = prices_sorted.iloc[-1]
+                        
+                        # 计算实际年数
+                        start_date = prices_sorted.index[0]
+                        end_date = prices_sorted.index[-1]
+                        years = (end_date - start_date).days / 365.25
+                        
+                        if start_price > 0 and end_price > 0 and years > 0:
+                            # 计算年化复合增长率
+                            price_cagr = ((end_price / start_price) ** (1 / years) - 1) * 100.0
+                            # 限制在合理范围
+                            g_h_default = max(-50.0, min(price_cagr, 200.0))
+                except Exception as e:
+                    g_h_default = 10.0
             
             col_g1, col_g2 = st.columns(2)
             with col_g1:
@@ -371,7 +362,7 @@ if search_button and ticker:
             st.divider()
             st.header("📊 历史发展过程 (5年)")
             
-            chart_cols = st.columns(3)
+            chart_cols = st.columns(2)
             
             with chart_cols[0]:
                 st.subheader("💹 股价走势")
@@ -386,13 +377,6 @@ if search_button and ticker:
                     st.line_chart(data['hist_pe'], height=300)
                 else:
                     st.info("暂无PE历史数据")
-            
-            with chart_cols[2]:
-                st.subheader("💵 历史 EPS (季度)")
-                if not data['hist_eps'].empty:
-                    st.bar_chart(data['hist_eps'], height=300)
-                else:
-                    st.info("暂无EPS历史数据")
 
         except Exception as e:
             st.error(f"❌ 无法获取股票 {ticker} 的数据。")
