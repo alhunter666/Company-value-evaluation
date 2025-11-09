@@ -323,7 +323,7 @@ if search_button and ticker:
 elif not ticker and search_button:
     st.warning("⚠️ 请输入股票代码")
 else:
-    st.info("请在侧边栏输入股票代码并点击"搜索"以开始分析。")
+    st.info('请在侧边栏输入股票代码并点击"搜索"以开始分析。')
     
     with st.expander("💡 使用说明"):
         st.markdown("""
