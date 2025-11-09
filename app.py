@@ -22,6 +22,14 @@ if 'recent_searches' not in st.session_state:
         columns=["代码", "公司", "价格", "Trailing PE", "PEG 中枢"]
     )
 
+# 初始化参数存储
+if 'current_ticker' not in st.session_state:
+    st.session_state.current_ticker = None
+if 'g_history' not in st.session_state:
+    st.session_state.g_history = 10.0
+if 'analyst_weight' not in st.session_state:
+    st.session_state.analyst_weight = 0.7
+
 # --- 3. 核心数据获取函数 ---
 
 @st.cache_data(ttl=3600)
@@ -40,7 +48,12 @@ def get_stock_data(ticker):
         "eps_ttm": yf_info.get('trailingEps', 0),
         "eps_fwd": yf_info.get('forwardEps', 0),
         "pe_ttm": yf_info.get('trailingPE', 0),
-        "pe_fwd": yf_info.get('forwardPE', 0)
+        "pe_fwd": yf_info.get('forwardPE', 0),
+        # 添加市值数据
+        "market_cap": yf_info.get('marketCap', 0),
+        "enterprise_value": yf_info.get('enterpriseValue', 0),
+        "revenue_ttm": yf_info.get('totalRevenue', 0),
+        "profit_margin": yf_info.get('profitMargins', 0),
     }
     
     # 2. 获取历史价格数据（5年）
@@ -212,15 +225,40 @@ if search_button and ticker:
                 st.error(f"❌ 无法获取 {ticker} 的有效数据。请检查股票代码是否正确。")
                 st.stop()
             
+            # 第一行：价格和PE指标
             cols_metrics = st.columns(4)
             cols_metrics[0].metric("💰 当前价格", f"${data['price']:.2f}")
             cols_metrics[1].metric("📊 Trailing PE (TTM)", f"{data['pe_ttm']:.2f}x" if data.get('pe_ttm') and data['pe_ttm'] > 0 else "N/A")
             cols_metrics[2].metric("🔮 Forward PE (远期)", f"{data['pe_fwd']:.2f}x" if data.get('pe_fwd') and data['pe_fwd'] > 0 else "N/A")
             cols_metrics[3].metric("⚡ Beta (5年风险)", f"{data['beta']:.2f}" if isinstance(data.get('beta'), (int, float)) else "N/A")
             
-            cols_eps = st.columns(4)
-            cols_eps[1].metric("💵 Trailing EPS (TTM)", f"${data['eps_ttm']:.2f}" if data['eps_ttm'] else "N/A")
-            cols_eps[2].metric("🎯 Forward EPS (远期)", f"${data['eps_fwd']:.2f}" if data['eps_fwd'] else "N/A")
+            # 第二行：市值和财务数据
+            cols_value = st.columns(4)
+            
+            # 格式化市值显示
+            def format_market_cap(value):
+                if value >= 1e12:
+                    return f"${value/1e12:.2f}T"
+                elif value >= 1e9:
+                    return f"${value/1e9:.2f}B"
+                elif value >= 1e6:
+                    return f"${value/1e6:.2f}M"
+                else:
+                    return f"${value:,.0f}"
+            
+            market_cap_str = format_market_cap(data['market_cap']) if data['market_cap'] > 0 else "N/A"
+            revenue_str = format_market_cap(data['revenue_ttm']) if data['revenue_ttm'] > 0 else "N/A"
+            profit_margin_str = f"{data['profit_margin']*100:.1f}%" if data['profit_margin'] else "N/A"
+            
+            cols_value[0].metric("🏢 市值", market_cap_str)
+            cols_value[1].metric("📊 年营收 (TTM)", revenue_str)
+            cols_value[2].metric("💹 利润率", profit_margin_str)
+            cols_value[3].metric("💵 Trailing EPS", f"${data['eps_ttm']:.2f}" if data['eps_ttm'] else "N/A")
+            
+            # 第三行：EPS数据（保持原有）
+            # cols_eps = st.columns(4)
+            # cols_eps[1].metric("💵 Trailing EPS (TTM)", f"${data['eps_ttm']:.2f}" if data['eps_ttm'] else "N/A")
+            # cols_eps[2].metric("🎯 Forward EPS (远期)", f"${data['eps_fwd']:.2f}" if data['eps_fwd'] else "N/A")
             
             # 分析师目标价
             if data.get('analyst_target') and data['analyst_target']['mean'] > 0:
