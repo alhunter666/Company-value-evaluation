@@ -3,6 +3,7 @@ import yfinance as yf
 import requests
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
 
 # --- 1. 配置与密钥 ---
 
@@ -192,17 +193,16 @@ def get_stock_data(ticker):
     
     return data
 
-def update_recent_list(ticker, data, price_mid_peg):
-    """
-    更新侧边栏的最近10条搜索记录。
-    """
+def update_recent_list(ticker, data):
+    """更新最近搜索，使用Forward数据"""
     new_entry = {
         "代码 Ticker": ticker.upper(),
         "公司 Company": data['name'][:20] + "..." if len(data['name']) > 20 else data['name'],
         "价格 Price": f"${data['price']:.2f}",
-        "Trailing PE": f"{data['pe_ttm']:.2f}x" if data.get('pe_ttm') and data['pe_ttm'] > 0 else "N/A",
-        "PEG 中枢": f"${price_mid_peg:.2f}" if price_mid_peg > 0 else "N/A"
+        "Forward PE": f"{data['pe_fwd']:.2f}x" if data.get('pe_fwd') else "N/A",
+        "Forward PEG": f"{(data['pe_fwd']/data['g_consensus']):.2f}" if data.get('pe_fwd') and data['g_consensus'] else "N/A"
     }
+    # ... 其余代码保持不变
     
     new_df_entry = pd.DataFrame([new_entry])
     
@@ -272,6 +272,38 @@ if search_button and ticker:
             
             cols_eps[3].metric("🏦 分析师预期增长 Analyst Growth", f"{data['g_consensus']:.1f}%")
             
+            # === 数据污染警告 ===
+            st.divider()
+            
+            # 检测数据污染（Forward EPS 远大于 Trailing EPS）
+            if data['eps_fwd'] and data['eps_ttm'] and data['eps_ttm'] > 0:
+                eps_ratio = data['eps_fwd'] / data['eps_ttm']
+                
+                if eps_ratio > 1.5:  # Forward EPS > Trailing EPS × 150%
+                    st.error(f"""
+                    ⚠️ **数据警告 Data Quality Warning**
+                    
+                    该公司的 **Trailing EPS (GAAP)** 受到一次性项目的严重影响：
+                    - 📉 Trailing EPS: ${data['eps_ttm']:.2f}
+                    - 📈 Forward EPS: ${data['eps_fwd']:.2f} (是Trailing的 **{eps_ratio:.1f}倍**)
+                    
+                    **可能原因：**
+                    - 收购摊销、一次性减值、股权激励等
+                    
+                    **重要提示：**
+                    - ❌ **请完全忽略 Trailing P/E ({data['pe_ttm']:.1f}x)**
+                    - ✅ **仅使用 Forward P/E ({data['pe_fwd']:.1f}x)** 进行估值
+                    """)
+                elif eps_ratio > 1.2:
+                    st.warning(f"💡 Forward EPS (${data['eps_fwd']:.2f}) 显著高于 Trailing EPS。建议优先使用 Forward P/E")
+            
+            # 修正Forward EPS（如果是单季度）
+            fwd_eps_display = data['eps_fwd']
+            if data['eps_fwd'] and data['eps_ttm'] and data['eps_fwd'] < data['eps_ttm'] * 0.5:
+                if data['g_consensus'] and data['g_consensus'] > -30:
+                    fwd_eps_display = data['eps_ttm'] * (1 + data['g_consensus']/100)
+                    st.info(f"💡 Forward EPS已调整: ${fwd_eps_display:.2f}")
+                        
             # 第三行：市值和财务数据 / Row 3: Market Cap and Financial Data
             cols_value = st.columns(4)
             
@@ -496,60 +528,89 @@ if search_button and ticker:
             valuation_results = {}
             price_mid_peg = 0.0
             
-            # -- B1. 历史PE法 / Historical P/E Method --
-            st.subheader("📊 方法一：历史PE估值法 / Historical P/E Valuation")
-            hist_pe = data['hist_pe'].dropna() if not data['hist_pe'].empty else pd.Series()
+            # --- B1. 远期P/E估值法（新版） ---
+            st.subheader("💰 方法一：远期P/E估值法 / Forward P/E Valuation")
             
-            if not hist_pe.empty and len(hist_pe) >= 4 and data['eps_ttm'] and data['eps_ttm'] > 0:
-                p_mean = hist_pe.mean()
-                p_std = hist_pe.std()
-                
-                # 优化：使用更保守的区间 (±0.75倍标准差作为合理区间，±1.5倍作为极端区间)
-                price_very_low = max(0, (p_mean - 1.5 * p_std)) * data['eps_ttm']
-                price_low_hist = max(0, (p_mean - 0.75 * p_std)) * data['eps_ttm']
-                price_mid_hist = p_mean * data['eps_ttm']
-                price_high_hist = (p_mean + 0.75 * p_std) * data['eps_ttm']
-                price_very_high = (p_mean + 1.5 * p_std) * data['eps_ttm']
-                
-                valuation_results['hist_pe'] = {
-                    'very_low': price_very_low,
-                    'low': price_low_hist,
-                    'mid': price_mid_hist,
-                    'high': price_high_hist,
-                    'very_high': price_very_high,
-                    'method': '历史PE法'
-                }
-                
-                col1, col2, col3, col4, col5 = st.columns(5)
-                col1.metric("🔻🔻 极度低估 Deep Value", f"${price_very_low:.2f}", help=f"PE: {(p_mean - 1.5 * p_std):.1f}x")
-                col2.metric("🔻 低估区间 Undervalued", f"${price_low_hist:.2f}", help=f"PE: {(p_mean - 0.75 * p_std):.1f}x")
-                col3.metric("🎯 合理中枢 Fair Value", f"${price_mid_hist:.2f}", help=f"PE: {p_mean:.1f}x")
-                col4.metric("🔺 高估区间 Overvalued", f"${price_high_hist:.2f}", help=f"PE: {(p_mean + 0.75 * p_std):.1f}x")
-                col5.metric("🔺🔺 严重高估 Extreme", f"${price_very_high:.2f}", help=f"PE: {(p_mean + 1.5 * p_std):.1f}x")
-                
-                # 评估建议
-                if data['price'] < price_very_low:
-                    st.error(f"⚠️ **异常低价 Abnormal**: 当前价格可能存在基本面问题，需要深入研究")
-                elif data['price'] < price_low_hist:
-                    discount_pct = ((price_mid_hist - data['price']) / price_mid_hist * 100)
-                    st.success(f"✅ **买入机会 Strong Buy**: 相对合理价有 **{discount_pct:.1f}%** 上涨空间")
-                elif data['price'] <= price_mid_hist:
-                    st.success(f"✅ **合理偏低 Fair-Low**: 估值合理偏低，可以考虑买入")
-                elif data['price'] <= price_high_hist:
-                    st.info(f"💡 **合理偏高 Fair-High**: 估值略高但在合理区间")
-                elif data['price'] <= price_very_high:
-                    over_pct = ((data['price'] - price_mid_hist) / price_mid_hist * 100)
-                    st.warning(f"⚠️ **高估 Overvalued**: 相对合理价高估 **{over_pct:.1f}%**")
-                else:
-                    st.error(f"❌ **严重高估 Severely Overvalued**: 价格远超历史合理区间")
-                
-                with st.expander("📈 查看计算详情 View Details"):
-                    st.write(f"- 历史平均PE Historical Avg P/E: {p_mean:.2f}x")
-                    st.write(f"- 历史标准差 Std Dev: {p_std:.2f}x")
-                    st.write(f"- TTM EPS: ${data['eps_ttm']:.2f}")
-                    st.write(f"- 合理PE区间 Fair P/E Range: {(p_mean - 0.75 * p_std):.1f}x - {(p_mean + 0.75 * p_std):.1f}x")
+            # 计算历史PE统计
+            if not data['hist_pe'].empty:
+                pe_mean = data['hist_pe'].mean()
+                pe_std = data['hist_pe'].std()
+                pe_low_rec = max(5, pe_mean - pe_std)
+                pe_mid_rec = pe_mean
+                pe_high_rec = pe_mean + pe_std
             else:
-                st.warning("⚠️ 历史PE数据不足 Insufficient historical P/E data")
+                pe_mean = data['pe_fwd'] if data['pe_fwd'] else 20
+                pe_std = pe_mean * 0.3
+                pe_low_rec = pe_mean * 0.7
+                pe_mid_rec = pe_mean
+                pe_high_rec = pe_mean * 1.3
+            
+            st.markdown("#### 📊 第一步：PE区间（基于历史统计）")
+            
+            stat_cols = st.columns(4)
+            stat_cols[0].metric("5年平均PE", f"{pe_mean:.1f}x")
+            stat_cols[1].metric("标准差", f"{pe_std:.1f}x")
+            
+            st.info(f"""
+            💡 **系统推荐**：
+            - 低估PE: {pe_low_rec:.1f}x (均值 - 1σ)
+            - 合理PE: {pe_mid_rec:.1f}x (均值)
+            - 高估PE: {pe_high_rec:.1f}x (均值 + 1σ)
+            
+            **您可根据宏观判断调整**（如参考2018年35x）
+            """)
+            
+            st.markdown("#### ⚙️ 第二步：自定义PE区间")
+            
+            pe_cols = st.columns(3)
+            with pe_cols[0]:
+                pe_low = st.number_input("🟢 低估PE", min_value=1.0, value=float(round(pe_low_rec, 1)), step=1.0)
+            with pe_cols[1]:
+                pe_mid = st.number_input("🟡 合理PE", min_value=1.0, value=float(round(pe_mid_rec, 1)), step=1.0)
+            with pe_cols[2]:
+                pe_high = st.number_input("🔴 高估PE", min_value=1.0, value=float(round(pe_high_rec, 1)), step=1.0)
+            
+            # 使用Forward EPS估值
+            if fwd_eps_display and fwd_eps_display > 0:
+                price_low = pe_low * fwd_eps_display
+                price_mid = pe_mid * fwd_eps_display
+                price_high = pe_high * fwd_eps_display
+                
+                st.markdown("#### 🎯 第三步：估值结果")
+                
+                result_cols = st.columns(3)
+                result_cols[0].metric("🟢 低估价格", f"${price_low:.2f}", 
+                                     delta=f"{(price_low/data['price'] - 1)*100:+.1f}%")
+                result_cols[1].metric("🟡 合理价格", f"${price_mid:.2f}",
+                                     delta=f"{(price_mid/data['price'] - 1)*100:+.1f}%")
+                result_cols[2].metric("🔴 高估价格", f"${price_high:.2f}",
+                                     delta=f"{(price_high/data['price'] - 1)*100:+.1f}%")
+                
+                # 估值结论
+                if data['price'] < price_low:
+                    st.success("🟢 **严重低估** Significantly Undervalued")
+                elif data['price'] < price_mid:
+                    st.success("🟢 **轻度低估** Moderately Undervalued")
+                elif data['price'] < price_high:
+                    st.info("🟡 **合理区间** Fair Value Range")
+                else:
+                    st.warning("🔴 **高估** Overvalued")
+                
+                # 可视化
+                fig = go.Figure()
+                fig.add_trace(go.Bar(
+                    x=['低估', '合理', '高估'],
+                    y=[price_low, price_mid, price_high],
+                    marker_color=['green', 'yellow', 'red'],
+                    text=[f'${price_low:.2f}', f'${price_mid:.2f}', f'${price_high:.2f}'],
+                    textposition='auto',
+                ))
+                fig.add_hline(y=data['price'], line_dash="dash", line_color="blue",
+                             annotation_text=f"当前 ${data['price']:.2f}")
+                fig.update_layout(title="Forward P/E估值区间", yaxis_title="价格 ($)", height=400)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.error("❌ Forward EPS数据缺失")
             
             st.divider()
             
@@ -707,120 +768,81 @@ if search_button and ticker:
                 st.dataframe(comparison_df, hide_index=True, use_container_width=True)
             
             # 使用推荐的增长率进行后续估值
+            # 使用推荐的增长率进行PEG比率分析
+            # 使用推荐的增长率进行PEG比率分析
             g_blended = recommended_growth
             
-            if g_blended > 0 and data['pe_ttm'] and data['pe_ttm'] > 0 and data['eps_ttm'] and data['eps_ttm'] > 0:
-                # 优化：使用更精细的PEG区间
-                # PEG < 0.5: 极度低估
-                # PEG 0.5-0.8: 低估
-                # PEG 0.8-1.2: 合理
-                # PEG 1.2-2.0: 高估
-                # PEG > 2.0: 严重高估
+            st.markdown("#### 🎯 远期PEG比率计算")
+            
+            st.info("💡 PEG不再计算价格，而是分析当前估值合理性")
+            
+            if g_blended > 0 and data['pe_fwd'] and data['pe_fwd'] > 0:
+                # 计算Forward PEG
+                forward_peg = data['pe_fwd'] / g_blended
                 
-                price_very_low_peg = 0.5 * g_blended * data['eps_ttm']
-                price_low_peg = 0.8 * g_blended * data['eps_ttm']
-                price_mid_peg = 1.0 * g_blended * data['eps_ttm']
-                price_high_peg = 1.2 * g_blended * data['eps_ttm']
-                price_very_high_peg = 2.0 * g_blended * data['eps_ttm']
+                peg_cols = st.columns(3)
+                peg_cols[0].metric("📊 Forward P/E", f"{data['pe_fwd']:.2f}x")
+                peg_cols[1].metric("📈 混合增长率", f"{g_blended:.1f}%")
+                peg_cols[2].metric("⭐ Forward PEG", f"{forward_peg:.2f}x")
                 
-                valuation_results['peg'] = {
-                    'very_low': price_very_low_peg,
-                    'low': price_low_peg,
-                    'mid': price_mid_peg,
-                    'high': price_high_peg,
-                    'very_high': price_very_high_peg,
-                    'method': 'PEG法'
-                }
+                st.markdown("---")
+                st.markdown("#### 📋 PEG估值判断")
                 
-                col1, col2, col3, col4, col5 = st.columns(5)
-                col1.metric("🔻🔻 极度低估", f"${price_very_low_peg:.2f}", help="PEG = 0.5")
-                col2.metric("🔻 保守估值", f"${price_low_peg:.2f}", help="PEG = 0.8")
-                col3.metric("🎯 合理估值", f"${price_mid_peg:.2f}", help="PEG = 1.0")
-                col4.metric("🔺 偏高估值", f"${price_high_peg:.2f}", help="PEG = 1.2")
-                col5.metric("🔺🔺 严重高估", f"${price_very_high_peg:.2f}", help="PEG = 2.0")
+                guide_cols = st.columns(5)
+                guide_cols[0].metric("🟢🟢 极度低估", "< 0.5")
+                guide_cols[1].metric("🟢 低估", "0.5-0.8")
+                guide_cols[2].metric("🟡 合理", "0.8-1.2")
+                guide_cols[3].metric("🔴 高估", "1.2-2.0")
+                guide_cols[4].metric("🔴🔴 严重高估", "> 2.0")
                 
-                # 当前PEG
-                current_peg = data['pe_ttm'] / g_blended
-                st.metric("📊 当前PEG比率 Current PEG", f"{current_peg:.2f}")
-                
-                # 评估建议
-                if current_peg < 0.5:
-                    st.success(f"✅ **极度低估 Deep Value**: PEG = {current_peg:.2f}，增长潜力被严重低估")
-                elif current_peg < 0.8:
-                    st.success(f"✅ **强烈买入 Strong Buy**: PEG = {current_peg:.2f}，估值吸引")
-                elif current_peg <= 1.2:
-                    st.info(f"💡 **合理估值 Fair Value**: PEG = {current_peg:.2f}，估值合理")
-                elif current_peg <= 2.0:
-                    st.warning(f"⚠️ **偏高估值 Overvalued**: PEG = {current_peg:.2f}，增长预期较高")
+                # 判断
+                if forward_peg < 0.5:
+                    st.success(f"✅ **极度低估** Forward PEG = {forward_peg:.2f}x")
+                elif forward_peg < 0.8:
+                    st.success(f"✅ **低估** Forward PEG = {forward_peg:.2f}x")
+                elif forward_peg <= 1.2:
+                    st.info(f"💡 **合理** Forward PEG = {forward_peg:.2f}x")
+                elif forward_peg <= 2.0:
+                    st.warning(f"⚠️ **高估** Forward PEG = {forward_peg:.2f}x")
                 else:
-                    st.error(f"❌ **严重高估 Severely Overvalued**: PEG = {current_peg:.2f}，增长预期过高")
-                
-                with st.expander("🔍 查看计算详情 View Details"):
-                    st.write(f"- 当前PE Current P/E: {data['pe_ttm']:.2f}x")
-                    st.write(f"- 混合增长率 Blended Growth: {g_blended:.2f}%")
-                    st.write(f"- 当前PEG Current PEG: {current_peg:.2f}")
-                    st.write(f"- TTM EPS: ${data['eps_ttm']:.2f}")
-                    st.write(f"\n**PEG估值标准 PEG Valuation Guide:**")
-                    st.write(f"- PEG < 0.5: 极度低估 Deep Value")
-                    st.write(f"- PEG 0.5-0.8: 低估 Undervalued")
-                    st.write(f"- PEG 0.8-1.2: 合理 Fair")
-                    st.write(f"- PEG 1.2-2.0: 高估 Overvalued")
-                    st.write(f"- PEG > 2.0: 严重高估 Severely Overvalued")
+                    st.error(f"❌ **严重高估** Forward PEG = {forward_peg:.2f}x")
             else:
-                st.error("⚠️ 增长率为负或数据不足 Negative growth or insufficient data")
+                st.error("⚠️ 数据不足")
             
             st.divider()
             
-            # -- B3. 综合建议 --
-            if len(valuation_results) >= 1:
-                st.subheader("🎯 综合估值建议")
-                
-                # 计算平均估值区间
-                all_lows = [v['low'] for v in valuation_results.values()]
-                all_mids = [v['mid'] for v in valuation_results.values()]
-                all_highs = [v['high'] for v in valuation_results.values()]
-                
-                avg_low = sum(all_lows) / len(all_lows)
-                avg_mid = sum(all_mids) / len(all_mids)
-                avg_high = sum(all_highs) / len(all_highs)
-                
-                # 添加分析师目标价（如果有）
-                analyst_mean = data.get('analyst_target', {}).get('mean', 0)
-                num_cols = 5 if analyst_mean > 0 else 4
-                
-                cols = st.columns(num_cols)
-                cols[0].metric("📍 当前价格", f"${data['price']:.2f}")
-                cols[1].metric("🔻 综合低估区", f"${avg_low:.2f}")
-                cols[2].metric("🎯 综合合理价", f"${avg_mid:.2f}")
-                cols[3].metric("🔺 综合高估区", f"${avg_high:.2f}")
-                
-                if analyst_mean > 0:
-                    cols[4].metric("🏦 分析师目标", f"${analyst_mean:.2f}")
-                
-                # 最终建议
-                if data['price'] < avg_low:
-                    upside = ((avg_mid - data['price']) / data['price'] * 100)
-                    st.success(f"### 💰 **投资建议: 买入** \n当前价格被低估，上涨空间约 **{upside:.1f}%** 至合理价位。")
-                elif data['price'] < avg_mid:
-                    upside = ((avg_mid - data['price']) / data['price'] * 100)
-                    st.success(f"### ✅ **投资建议: 可以买入** \n当前价格合理偏低，仍有 **{upside:.1f}%** 上涨空间。")
-                elif data['price'] < avg_high:
-                    st.info(f"### 💡 **投资建议: 持有** \n当前价格在合理区间内，建议持有观望。")
-                else:
-                    downside = ((data['price'] - avg_mid) / data['price'] * 100)
-                    st.warning(f"### ⚠️ **投资建议: 考虑减仓** \n当前价格被高估约 **{downside:.1f}%**，建议等待回调。")
-                
-                # 对比分析师目标价
-                if analyst_mean > 0:
-                    analyst_vs_model = ((analyst_mean - avg_mid) / avg_mid * 100)
-                    if abs(analyst_vs_model) < 10:
-                        st.success(f"✅ **估值一致性**: 分析师目标价 (${analyst_mean:.2f}) 与模型估值基本一致，相差 {abs(analyst_vs_model):.1f}%")
-                    elif analyst_mean > avg_mid:
-                        st.info(f"📊 **估值对比**: 分析师目标价 (${analyst_mean:.2f}) 比模型估值高 {analyst_vs_model:.1f}%，市场预期更乐观")
-                    else:
-                        st.warning(f"📊 **估值对比**: 分析师目标价 (${analyst_mean:.2f}) 比模型估值低 {abs(analyst_vs_model):.1f}%，市场预期更谨慎")
+            st.divider()
+
+            # -- B3. 分析师目标价 --
+            st.subheader("🏦 方法三：分析师目标价 / Analyst Targets")
             
-            update_recent_list(ticker, data, price_mid_peg)
+            analyst_target = data.get('analyst_target', {})
+            if analyst_target and analyst_target.get('mean', 0) > 0:
+                analyst_mean = analyst_target['mean']
+                analyst_low = analyst_target.get('low', 0)
+                analyst_high = analyst_target.get('high', 0)
+                num_analysts = analyst_target.get('count', 0)
+                
+                analyst_cols = st.columns(4)
+                analyst_cols[0].metric("🎯 均值", f"${analyst_mean:.2f}",
+                                      delta=f"{(analyst_mean/data['price'] - 1)*100:+.1f}%")
+                analyst_cols[1].metric("🔻 最低", f"${analyst_low:.2f}" if analyst_low > 0 else "N/A")
+                analyst_cols[2].metric("🔺 最高", f"${analyst_high:.2f}" if analyst_high > 0 else "N/A")
+                analyst_cols[3].metric("👥 分析师", f"{num_analysts}")
+                
+                # 与Forward PE对比
+                if price_mid > 0:
+                    diff = ((analyst_mean - price_mid) / price_mid * 100)
+                    if abs(diff) < 10:
+                        st.success(f"✅ 与Forward PE估值一致 (差异{abs(diff):.1f}%)")
+                    elif diff > 0:
+                        st.info(f"📊 分析师更乐观 (+{diff:.1f}%)")
+                    else:
+                        st.warning(f"📊 分析师更谨慎 ({diff:.1f}%)")
+            else:
+                st.info("💡 暂无分析师数据")
+            
+        
 
             # --- C. 历史图表 / Historical Charts ---
             st.divider()
