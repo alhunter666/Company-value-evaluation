@@ -560,49 +560,33 @@ if search_button and ticker:
             **您可根据宏观判断调整**（如参考2018年35x）
             """)
             
-           st.markdown("#### ⚙️ 第二步：自定义PE区间")
-            
-            # ✅ 使用表单避免每次输入都重新运行
-            with st.form(key=f"pe_form_{ticker}"):
-                pe_cols = st.columns(3)
-                with pe_cols[0]:
-                    pe_low = st.number_input(
-                        "🟢 低估PE", 
-                        min_value=1.0, 
-                        value=float(round(pe_low_rec, 1)), 
-                        step=1.0
-                    )
-                with pe_cols[1]:
-                    pe_mid = st.number_input(
-                        "🟡 合理PE", 
-                        min_value=1.0, 
-                        value=float(round(pe_mid_rec, 1)), 
-                        step=1.0
-                    )
-                with pe_cols[2]:
-                    pe_high = st.number_input(
-                        "🔴 高估PE", 
-                        min_value=1.0, 
-                        value=float(round(pe_high_rec, 1)), 
-                        step=1.0
-                    )
-                
-                # 提交按钮
-                submitted = st.form_submit_button("✅ 应用PE区间并计算", use_container_width=True)
-            
-            # 只有提交后才计算（但第一次加载也显示默认值）
-            if submitted or 'pe_form_submitted' not in st.session_state:
-                st.session_state.pe_form_submitted = True
-                
-                # 使用Forward EPS估值
-                if fwd_eps_display and fwd_eps_display > 0:
-                    price_low = pe_low * fwd_eps_display
-                    price_mid = pe_mid * fwd_eps_display
-                    price_high = pe_high * fwd_eps_display
-                    
-                    st.markdown("#### 🎯 第三步：估值结果")
-                    
-                    # ... 后续的result_cols和图表代码保持不变
+            st.markdown("#### ⚙️ 第二步：自定义PE区间")
+
+            pe_cols = st.columns(3)
+            with pe_cols[0]:
+                pe_low = st.number_input(
+                    "🟢 低估PE", 
+                    min_value=1.0, 
+                    value=float(round(pe_low_rec, 1)), 
+                    step=1.0,
+                    key=f"pe_low_{ticker}"  # ✅ 添加这行
+                )
+            with pe_cols[1]:
+                pe_mid = st.number_input(
+                    "🟡 合理PE", 
+                    min_value=1.0, 
+                    value=float(round(pe_mid_rec, 1)), 
+                    step=1.0,
+                    key=f"pe_mid_{ticker}"  # ✅ 添加这行
+                )
+            with pe_cols[2]:
+                pe_high = st.number_input(
+                    "🔴 高估PE", 
+                    min_value=1.0, 
+                    value=float(round(pe_high_rec, 1)), 
+                    step=1.0,
+                    key=f"pe_high_{ticker}"  # ✅ 添加这行
+                )
             
             # 使用Forward EPS估值
             if fwd_eps_display and fwd_eps_display > 0:
