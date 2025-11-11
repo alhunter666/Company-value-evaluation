@@ -561,14 +561,32 @@ if search_button and ticker:
             """)
             
             st.markdown("#### ⚙️ 第二步：自定义PE区间")
-            
+
             pe_cols = st.columns(3)
             with pe_cols[0]:
-                pe_low = st.number_input("🟢 低估PE", min_value=1.0, value=float(round(pe_low_rec, 1)), step=1.0)
+                pe_low = st.number_input(
+                    "🟢 低估PE", 
+                    min_value=1.0, 
+                    value=float(round(pe_low_rec, 1)), 
+                    step=1.0,
+                    key=f"pe_low_{ticker}"  # ✅ 添加这行
+                )
             with pe_cols[1]:
-                pe_mid = st.number_input("🟡 合理PE", min_value=1.0, value=float(round(pe_mid_rec, 1)), step=1.0)
+                pe_mid = st.number_input(
+                    "🟡 合理PE", 
+                    min_value=1.0, 
+                    value=float(round(pe_mid_rec, 1)), 
+                    step=1.0,
+                    key=f"pe_mid_{ticker}"  # ✅ 添加这行
+                )
             with pe_cols[2]:
-                pe_high = st.number_input("🔴 高估PE", min_value=1.0, value=float(round(pe_high_rec, 1)), step=1.0)
+                pe_high = st.number_input(
+                    "🔴 高估PE", 
+                    min_value=1.0, 
+                    value=float(round(pe_high_rec, 1)), 
+                    step=1.0,
+                    key=f"pe_high_{ticker}"  # ✅ 添加这行
+                )
             
             # 使用Forward EPS估值
             if fwd_eps_display and fwd_eps_display > 0:
