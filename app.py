@@ -7,6 +7,22 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots # 导入 make_subplots
 
+# --- 3. 辅助函数 (全局) ---
+def format_market_cap(value):
+    """
+    格式化市值显示 (T/B/M)
+    """
+    if value >= 1e12:
+        return f"${value/1e12:.2f}T"
+    elif value >= 1e9:
+        return f"${value/1e9:.2f}B"
+    elif value >= 1e6:
+        return f"${value/1e6:.2f}M"
+    else:
+        return f"${value:,.0f}"
+
+# --- (您现有的其他代码，如 @st.cache_data, def get_stock_data 等，从这里开始...) ---
+
 # --- 1. 配置与密钥 ---
 
 st.set_page_config(layout="wide", page_title="股票估值分析", page_icon="🩵")
