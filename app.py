@@ -4,6 +4,7 @@ import requests
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import time  # Import time for rate limiting
 
 # --- 1. Configuration & Secrets ---
 
@@ -38,12 +39,19 @@ if 'current_ticker' not in st.session_state:
 @st.cache_data(ttl=3600)
 def get_stock_data(ticker, api_key=None):
     """
-    Fetches all necessary data for a single stock.
+    Fetches all necessary data for a single stock with rate limit handling.
     """
     yf_stock = yf.Ticker(ticker)
     
     # 1. YFinance Basic Data
-    yf_info = yf_stock.info
+    try:
+        # Fetching info is the most likely to hit rate limits
+        yf_info = yf_stock.info
+    except Exception as e:
+        if "RateLimitError" in str(e):
+            st.error("⚠️ Yahoo Finance Rate Limit Reached. Please wait a few seconds and try again.")
+            return None
+        return None
     
     # Check if data is valid
     if not yf_info or 'symbol' not in yf_info:
@@ -83,6 +91,8 @@ def get_stock_data(ticker, api_key=None):
     
     # 2. Historical Price Data (5y)
     try:
+        # Add a small delay to be nice to the API
+        time.sleep(0.1) 
         hist_price = yf_stock.history(period="5y")
         if not hist_price.empty:
             data["hist_price"] = hist_price['Close']
@@ -200,7 +210,7 @@ st.sidebar.caption("Powered by Streamlit")
 ticker_input = st.sidebar.text_input("Enter Ticker Symbol", key="ticker_input_sidebar").strip().upper()
 search_triggered = st.sidebar.button("🔍 Search", use_container_width=True, type="primary")
 
-# --- CRITICAL FIX: Handle Search Logic with Session State ---
+# --- Interaction Fix: Handle Search Logic with Session State ---
 if search_triggered and ticker_input:
     st.session_state.current_ticker = ticker_input
 
@@ -223,8 +233,11 @@ if ticker:
     with st.spinner(f"Fetching data for {ticker}..."):
         data = get_stock_data(ticker, FMP_API_KEY)
 
-    if not data or data['price'] == 0:
-        st.error(f"❌ Unable to fetch valid data for {ticker}. Please check the symbol.")
+    if data is None:
+        st.error(f"❌ Unable to fetch data for {ticker}. This might be due to an invalid symbol OR Yahoo Finance rate limits.")
+        st.info("💡 Try waiting 30 seconds and searching again.")
+    elif data['price'] == 0:
+        st.error(f"❌ Valid ticker but no price data found for {ticker}.")
     else:
         update_recent_list(ticker, data)
 
